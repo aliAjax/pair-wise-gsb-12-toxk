@@ -1,190 +1,60 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, ref } from "vue";
+import { useConsoleStore } from "./store";
+import DispatchForm from "./components/DispatchForm.vue";
+import TaskBoard from "./components/TaskBoard.vue";
+import LeakPanel from "./components/LeakPanel.vue";
+import DirectoryPanel from "./components/DirectoryPanel.vue";
+import type { DispatchTask, GateSubmitOutcome } from "./types";
 
-type Field = {
-  key: string;
-  label: string;
-  type?: "number" | "date" | "select";
-  options?: readonly string[];
-};
+const store = useConsoleStore();
 
-type RecordItem = {
-  id: string;
-  status: string;
-  notes: string;
-  createdAt: string;
-  [key: string]: string | number;
-};
+type Tab = "dispatch" | "leak" | "directory";
+const tab = ref<Tab>("dispatch");
 
-const project = {
-  "number": 3,
-  "folder": "dfwl/frontend/dfwlfront-3",
-  "framework": "vue",
-  "title": "车辆调度小工具",
-  "subtitle": "维护车辆、司机和任务状态，为空闲车辆分配配送任务。",
-  "industry": "物流",
-  "stack": [
-    "Vue3",
-    "Vite",
-    "TypeScript",
-    "Pinia",
-    "Naive UI"
-  ],
-  "storageKey": "dfwlfront-3-dispatch",
-  "formTitle": "新增配送任务",
-  "primaryAction": "分配任务",
-  "entityLabel": "车辆",
-  "statuses": [
-    "空闲",
-    "执行中",
-    "已完成"
-  ],
-  "filters": [
-    "全部区域",
-    "城北",
-    "城东",
-    "城南"
-  ],
-  "fields": [
-    {
-      "key": "vehicle",
-      "label": "车牌号"
-    },
-    {
-      "key": "driver",
-      "label": "司机"
-    },
-    {
-      "key": "zone",
-      "label": "配送区域",
-      "type": "select",
-      "options": [
-        "城北",
-        "城东",
-        "城南"
-      ]
-    },
-    {
-      "key": "task",
-      "label": "配送任务"
-    }
-  ],
-  "records": [
-    {
-      "vehicle": "沪A-82L6",
-      "driver": "董飞",
-      "zone": "城北",
-      "task": "商超补货",
-      "status": "空闲",
-      "notes": "可立即派车"
-    },
-    {
-      "vehicle": "沪B-73K9",
-      "driver": "周航",
-      "zone": "城东",
-      "task": "医药配送",
-      "status": "执行中",
-      "notes": "预计17:30返回"
-    }
-  ],
-  "metricLabels": [
-    "车辆总数",
-    "执行中",
-    "空闲车辆"
-  ]
-} as const;
+const tabs: { key: Tab; label: string }[] = [
+  { key: "dispatch", label: "派车与装车联动" },
+  { key: "leak", label: "泄漏应急" },
+  { key: "directory", label: "车辆资料" }
+];
 
-const fields = project.fields as readonly Field[];
-const statuses = [...project.statuses];
+const editingTask = ref<DispatchTask | null>(null);
 
-function createBlank() {
-  return Object.fromEntries(fields.map((field) => [field.key, field.type === "number" ? 0 : ""]));
+const toast = ref<{ message: string; type: "ok" | "err" } | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+function notify(message: string, type: "ok" | "err") {
+  toast.value = { message, type };
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toast.value = null), 4200);
 }
 
-function loadRecords(): RecordItem[] {
-  const raw = localStorage.getItem(project.storageKey);
-  if (!raw) {
-    return project.records.map((record, index) => ({
-      ...record,
-      id: `seed-${index + 1}`,
-      createdAt: new Date(Date.now() - index * 86400000).toISOString()
-    })) as RecordItem[];
-  }
-  try {
-    return JSON.parse(raw) as RecordItem[];
-  } catch {
-    return [];
+function onGateResult(outcome: GateSubmitOutcome) {
+  if (outcome.ok) {
+    notify(`校验通过，派车单已放行`, "ok");
+  } else {
+    notify(`整单未放行：${outcome.reasons.join("；")}（输入已保留，可修改后重新校验）`, "err");
   }
 }
 
-const records = ref<RecordItem[]>(loadRecords());
-const form = reactive<Record<string, string | number>>(createBlank());
-const note = ref("");
-const filter = ref(project.filters[0]);
-
-const filteredRecords = computed(() => {
-  if (filter.value.startsWith("全部")) return records.value;
-  return records.value.filter((record) => Object.values(record).includes(filter.value));
-});
-
-const metrics = computed(() => {
-  const total = records.value.length;
-  const second = records.value.filter((record) => record.status === statuses[1]).length;
-  const third = records.value.filter((record) => record.status === statuses[2]).length;
-  const numberValues = records.value.flatMap((record) =>
-    fields.filter((field) => field.type === "number").map((field) => Number(record[field.key] || 0))
-  );
-  const sum = numberValues.reduce((acc, value) => acc + value, 0);
-  return [total, second || sum, third || Math.round(sum / Math.max(total, 1))];
-});
-
-const chartRows = computed(() => statuses.map((status) => ({
-  status,
-  value: records.value.filter((record) => record.status === status).length
-})));
-
-const maxChart = computed(() => Math.max(1, ...chartRows.value.map((row) => row.value)));
-
-function persist() {
-  localStorage.setItem(project.storageKey, JSON.stringify(records.value));
+function startEdit(task: DispatchTask) {
+  editingTask.value = task;
+  tab.value = "dispatch";
+  notify(`正在整改派车单 ${task.code}，修改后可重新校验放行`, "ok");
 }
 
-function nextStatus(status: string) {
-  const index = statuses.indexOf(status);
-  return statuses[(index + 1) % statuses.length];
+function switchTab(key: Tab) {
+  tab.value = key;
 }
 
-function primaryText(record: RecordItem) {
-  const first = fields[0];
-  const second = fields[1];
-  return [record[first.key], record[second.key]].filter(Boolean).join(" / ") || project.entityLabel;
-}
-
-function submit() {
-  records.value = [
-    {
-      ...form,
-      id: crypto.randomUUID(),
-      status: statuses[0],
-      notes: note.value || "暂无备注",
-      createdAt: new Date().toISOString()
-    } as RecordItem,
-    ...records.value
-  ];
-  Object.assign(form, createBlank());
-  note.value = "";
-  persist();
-}
-
-function flow(record: RecordItem) {
-  record.status = nextStatus(record.status);
-  persist();
-}
-
-function remove(id: string) {
-  records.value = records.value.filter((record) => record.id !== id);
-  persist();
-}
+const metrics = computed(() => store.metrics);
+const metricCards = computed(() => [
+  { label: "派车单总数", value: metrics.value.total },
+  { label: "装车中", value: metrics.value.loading },
+  { label: "待放行/已放行", value: metrics.value.pending },
+  { label: "已中止待复装", value: metrics.value.aborted },
+  { label: "未关闭泄漏", value: metrics.value.openLeaks }
+]);
 </script>
 
 <template>
@@ -192,77 +62,61 @@ function remove(id: string) {
     <div class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">{{ project.industry }}行业前端最小闭环</p>
-          <h1>{{ project.title }}</h1>
-          <p class="subtitle">{{ project.subtitle }}</p>
+          <p class="eyebrow">危化品仓储物流 · 装卸安全联动</p>
+          <h1>危化品装卸接地与泄漏应急联动台</h1>
+          <p class="subtitle">
+            派车单登记罐车、司机、装卸位、介质与时段；接地电阻超 10Ω、接地夹未回讯或司机危化证过期整单不放行。
+            装车中接地断开立即中止并封存已装量与版本；泄漏事件关闭前，同装卸位不得接新任务。
+          </p>
         </div>
         <div class="stack">
-          <span v-for="item in project.stack" :key="item" class="tag">{{ item }}</span>
+          <span class="tag">Vue3</span>
+          <span class="tag">TypeScript</span>
+          <span class="tag">Pinia</span>
+          <span class="tag">本地持久化</span>
         </div>
       </header>
 
       <section class="metrics">
-        <article v-for="(label, index) in project.metricLabels" :key="label" class="metric">
-          <span>{{ label }}</span>
-          <strong>{{ metrics[index] }}</strong>
+        <article
+          v-for="card in metricCards"
+          :key="card.label"
+          class="metric"
+          :class="{ alert: card.label === '未关闭泄漏' && card.value > 0 }"
+        >
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
         </article>
       </section>
 
-      <section class="workspace">
-        <form class="panel" @submit.prevent="submit">
-          <h2>{{ project.formTitle }}</h2>
-          <div class="form-grid">
-            <label v-for="field in fields" :key="field.key">
-              {{ field.label }}
-              <select v-if="field.type === 'select'" v-model="form[field.key]" required>
-                <option value="">请选择</option>
-                <option v-for="option in field.options" :key="option">{{ option }}</option>
-              </select>
-              <input v-else v-model="form[field.key]" :type="field.type || 'text'" required />
-            </label>
-            <label>
-              备注
-              <textarea v-model="note" placeholder="填写处理说明或现场备注" />
-            </label>
-            <button type="submit">{{ project.primaryAction }}</button>
-          </div>
-        </form>
+      <nav class="tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          type="button"
+          :class="{ active: tab === t.key }"
+          @click="switchTab(t.key)"
+        >
+          {{ t.label }}
+          <em v-if="t.key === 'leak' && metrics.openLeaks > 0" class="badge">{{ metrics.openLeaks }}</em>
+        </button>
+      </nav>
 
-        <section class="list-panel">
-          <div class="toolbar">
-            <h2>{{ project.entityLabel }}列表</h2>
-            <select v-model="filter">
-              <option v-for="item in project.filters" :key="item">{{ item }}</option>
-            </select>
-          </div>
+      <transition name="fade">
+        <div v-if="toast" class="toast" :class="toast.type">{{ toast.message }}</div>
+      </transition>
 
-          <div class="record-grid">
-            <div v-if="filteredRecords.length === 0" class="empty">暂无匹配数据</div>
-            <article v-for="record in filteredRecords" :key="record.id" class="record">
-              <div class="record-head">
-                <p class="record-title">{{ primaryText(record) }}</p>
-                <span class="status">{{ record.status }}</span>
-              </div>
-              <div class="details">
-                <span v-for="field in fields" :key="field.key">{{ field.label }}: {{ record[field.key] }}</span>
-              </div>
-              <p class="note">{{ record.notes }}</p>
-              <div class="actions">
-                <button type="button" @click="flow(record)">流转状态</button>
-                <button class="secondary" type="button" @click="navigator.clipboard?.writeText(primaryText(record))">复制摘要</button>
-                <button class="danger" type="button" @click="remove(record.id)">删除</button>
-              </div>
-            </article>
-          </div>
+      <section v-if="tab === 'dispatch'" class="workspace">
+        <DispatchForm :editing="editingTask" @result="onGateResult" @cancel-edit="editingTask = null" />
+        <TaskBoard @edit="startEdit" @notify="notify" />
+      </section>
 
-          <div class="mini-chart">
-            <div v-for="row in chartRows" :key="row.status" class="bar">
-              <span>{{ row.status }}</span>
-              <div class="bar-track"><div class="bar-fill" :style="{ width: `${(row.value / maxChart) * 100}%` }" /></div>
-              <strong>{{ row.value }}</strong>
-            </div>
-          </div>
-        </section>
+      <section v-else-if="tab === 'leak'" class="workspace single">
+        <LeakPanel @notify="notify" />
+      </section>
+
+      <section v-else class="workspace single">
+        <DirectoryPanel />
       </section>
     </div>
   </main>
